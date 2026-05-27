@@ -1,23 +1,15 @@
-import agenda from "../config/agenda.js";
-import "./publishPostJob.js"; // registers the job definition with agenda
-import { startSlotAllocator } from "./slotAllocatorJob.js";
+import { createPublishWorker } from "./publishPostJob.js";
+import { startSlotAllocator  } from "./slotAllocatorJob.js";
 
-/**
- * Starts Agenda and all cron jobs.
- * Call this once in server.js after DB sync.
- */
+let worker;
+
 export const initJobs = async () => {
-  await agenda.start();
-  console.log("✅ Agenda started");
-
+  worker = createPublishWorker();
   startSlotAllocator();
 };
 
-/**
- * Graceful shutdown — lets running jobs finish before exit.
- */
 export const gracefulShutdown = async () => {
-  await agenda.stop();
-  console.log("🛑 Agenda stopped gracefully");
+  console.log("🛑 Shutting down gracefully...");
+  if (worker) await worker.close();
   process.exit(0);
 };
