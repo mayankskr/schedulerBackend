@@ -34,6 +34,10 @@ const Post = sequelize.define(
       type: DataTypes.DATE,
       allowNull: false,
     },
+    keywords: {
+      type: DataTypes.JSON,
+      defaultValue: [],
+    },
     status: {
       type: DataTypes.ENUM(
         "draft",

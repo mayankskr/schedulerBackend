@@ -9,6 +9,10 @@ const Team = sequelize.define(
       defaultValue: DataTypes.UUIDV4,
       primaryKey: true,
     },
+    created_by: {
+      type: DataTypes.UUID,
+      references: { model: "users", key: "id" },
+    },
     name: {
       type: DataTypes.STRING,
       allowNull: false,
@@ -17,4 +21,4 @@ const Team = sequelize.define(
   { tableName: "teams", timestamps: true },
 );
 
-export default Team
+export default Team;

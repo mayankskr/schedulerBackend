@@ -1,6 +1,9 @@
 import { Post, PostPlatform } from "../models/index.js";
-import { uploadOnCloudinary, deleteFromCloudinary } from "../utils/cloudinary.js";
-import { nextAvailableSlot, bookSlot, freeSlot } from "./scheduler.service.js";
+import {
+  uploadOnCloudinary,
+  deleteFromCloudinary,
+} from "../utils/cloudinary.js";
+import { nextAvailableSlot, bookSlot, freeSlot } from "./schedulerService.js";
 import agenda from "../config/agenda.js";
 import { AppError } from "../utils/appError.js";
 
@@ -9,7 +12,11 @@ const VALID_PLATFORMS = ["fb", "ig", "yt", "tw"];
 const parsePlatforms = (platforms) => {
   if (Array.isArray(platforms)) return platforms;
   if (typeof platforms === "string") {
-    try { return JSON.parse(platforms); } catch { return [platforms]; }
+    try {
+      return JSON.parse(platforms);
+    } catch {
+      return [platforms];
+    }
   }
   return VALID_PLATFORMS; // default: all 4
 };
@@ -37,11 +44,14 @@ export const createPostService = async ({
   // 3. Validate platforms
   const selectedPlatforms = parsePlatforms(platforms);
   const invalid = selectedPlatforms.filter((p) => !VALID_PLATFORMS.includes(p));
-  if (invalid.length) throw new AppError(`Invalid platforms: ${invalid.join(", ")}`, 400);
+  if (invalid.length)
+    throw new AppError(`Invalid platforms: ${invalid.join(", ")}`, 400);
 
   // 4. Determine file_type from mimetype
   const mimePrefix = file.mimetype.split("/")[0];
-  const fileType = ["image", "video", "audio"].includes(mimePrefix) ? mimePrefix : "image";
+  const fileType = ["image", "video", "audio"].includes(mimePrefix)
+    ? mimePrefix
+    : "image";
 
   // 5. Create Post record
   const post = await Post.create({
@@ -51,7 +61,9 @@ export const createPostService = async ({
     file_type: fileType,
     caption,
     keywords: keywords
-      ? typeof keywords === "string" ? JSON.parse(keywords) : keywords
+      ? typeof keywords === "string"
+        ? JSON.parse(keywords)
+        : keywords
       : [],
     scheduled_at: slotTime,
     status: "scheduled",
@@ -66,11 +78,13 @@ export const createPostService = async ({
       post_id: post.id,
       platform,
       publish_status: "pending",
-    }))
+    })),
   );
 
   // 8. Schedule Agenda job
-  const job = await agenda.schedule(slotTime, "publishPost", { postId: post.id });
+  const job = await agenda.schedule(slotTime, "publishPost", {
+    postId: post.id,
+  });
   await post.update({ agenda_job_id: job.attrs._id.toString() });
 
   // Return full post with platforms
@@ -96,8 +110,8 @@ export const deletePostService = async (postId) => {
   await freeSlot(postId);
 
   // 3. Delete Cloudinary asset
-  await deleteFromCloudinary(post.cloudinary_public_id, post.file_type);
-
+  const resourceType = post.file_type === "image" ? "image" : "video";
+  await deleteFromCloudinary(post.cloudinary_public_id, resourceType);
   // 4. Destroy post (PostPlatform rows cascade via DB FK)
   await post.destroy();
 

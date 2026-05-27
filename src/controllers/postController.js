@@ -1,17 +1,18 @@
-import { createPostService, deletePostService } from "../services/post.service.js";
+import { createPostService, deletePostService } from "../services/postService.js";
 import ApiResponse from "../utils/apiResponse.js";
 import { AppError, asyncWrap } from "../utils/appError.js";
 
 export const createPost = asyncWrap(async (req, res) => {
-  const { caption, keywords, scheduled_at } = req.body;
-
+  const { caption, keywords, scheduled_at, platforms } = req.body;
   if (!req.file) throw new AppError("File is required", 400);
 
   const post = await createPostService({
     file: req.file,
     caption,
     keywords,
+    platforms,
     scheduled_at,
+    userId: req.user.id,   // set by auth middleware once built
   });
 
   res.status(201).json(new ApiResponse(201, post, "Post created successfully"));

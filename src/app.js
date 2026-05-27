@@ -30,6 +30,9 @@ app.get("/", (req, res) => res.json({ message: "API running" }));
 
 // Import Routes
 import postRouter from "./routes/postRoute.js"; // fixed: was postRoutes.js
+import scheduleRouter from "./routes/scheduleRoute.js";
+import teamRouter    from "./routes/teamRoute.js";
+
 
 // Use Routes
 app.use("/api/posts", postRouter);
