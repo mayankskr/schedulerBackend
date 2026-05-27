@@ -19,9 +19,12 @@ app.use(
   }),
 );
 
-// Routes
 app.get("/", (req, res) => res.json({ message: "API running" }));
 
+// Routes Import
+import postRouter from "./routes/postRoutes.js";
 
+// Route use
+app.use("/api/posts", postRouter);
 
 export default app;
