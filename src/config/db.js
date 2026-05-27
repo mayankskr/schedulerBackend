@@ -10,12 +10,25 @@ const sequelize = new Sequelize(
     port: process.env.DB_PORT,
     dialect: "mysql",
     logging: false,
-  },
+    timezone: "+05:30",                    // ← IST for Sequelize queries
+    dialectOptions: {
+      timezone: "+05:30",                  // ← IST for MySQL connection
+    },
+    pool: {
+      max: 10,
+      min: 2,
+      acquire: 30000,
+      idle: 30000,
+    },
+  }
 );
 
 sequelize
   .authenticate()
-  .then(() => console.log("Successfully connected to database"))
-  .catch((err) => console.log(err));
+  .then(() => console.log("✅ Database connected"))
+  .catch((err) => {
+    console.error("❌ DB connection failed:", err.message);
+    process.exit(1);
+  });
 
 export default sequelize;
