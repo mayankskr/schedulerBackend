@@ -7,18 +7,16 @@ import "dotenv/config";
 
 const app = express();
 
-// Middleware
-
-// Security & logging
+// ── Security & logging ─────────────────────────────────────────
 app.use(helmet());
 app.use(morgan("dev"));
 
-// Body parsers
+// ── Body parsers ───────────────────────────────────────────────
 app.use(express.json({ limit: "16kb" }));
 app.use(express.urlencoded({ extended: true, limit: "16kb" }));
 app.use(cookieParser());
 
-// CORS
+// ── CORS ───────────────────────────────────────────────────────
 app.use(
   cors({
     origin: process.env.FRONTEND_URL,
@@ -26,21 +24,22 @@ app.use(
   })
 );
 
+// ── Health check ───────────────────────────────────────────────
 app.get("/", (req, res) => res.json({ message: "API running" }));
 
-// Import Routes
-import postRouter from "./routes/postRoute.js"; // fixed: was postRoutes.js
+// ── Routes ─────────────────────────────────────────────────────
+import postRouter     from "./routes/postRoute.js";
 import scheduleRouter from "./routes/scheduleRoute.js";
-import teamRouter    from "./routes/teamRoute.js";
+import teamRouter     from "./routes/teamRoute.js";
 
+app.use("/api/posts",    postRouter);
+app.use("/api/schedule", scheduleRouter);
+app.use("/api/teams",    teamRouter);
 
-// Use Routes
-app.use("/api/posts", postRouter);
-
-// Global error handler — must be last
+// ── Global error handler — must be last ───────────────────────
 app.use((err, req, res, next) => {
   const statusCode = err.status || err.statusCode || 500;
-  const message = err.message || "Internal Server Error";
+  const message    = err.message || "Internal Server Error";
 
   res.status(statusCode).json({
     success: false,
