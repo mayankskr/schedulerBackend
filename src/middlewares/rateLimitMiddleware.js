@@ -1,10 +1,5 @@
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 
-/**
- * Applied to /auth/* routes.
- * Limits brute-force login/register attempts.
- * 10 requests per 15 minutes per IP.
- */
 export const authRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
@@ -17,15 +12,10 @@ export const authRateLimiter = rateLimit({
   },
 });
 
-/**
- * Applied to POST /posts.
- * Keyed by authenticated user ID (falls back to IP for unauthenticated).
- * 30 requests per hour per user.
- */
 export const postRateLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 30,
-  keyGenerator: (req) => req.user?.id || req.ip,
+  keyGenerator: (req) => req.user?.id ?? ipKeyGenerator(req),  // ← fixed
   standardHeaders: true,
   legacyHeaders: false,
   message: {
