@@ -14,7 +14,8 @@ const getAuth = () => {
   const client = new google.auth.OAuth2(
     process.env.YOUTUBE_CLIENT_ID,
     process.env.YOUTUBE_CLIENT_SECRET,
-    process.env.YOUTUBE_REDIRECT_URI || "https://developers.google.com/oauthplayground"
+    process.env.YOUTUBE_REDIRECT_URI ||
+      "https://developers.google.com/oauthplayground",
   );
   client.setCredentials({
     refresh_token: process.env.YOUTUBE_REFRESH_TOKEN,
@@ -38,14 +39,18 @@ export const postToYoutube = async ({
   caption,
   keywords,
   fileType,
-  privacyStatus = "public",
+  account,
 }) => {
   if (fileType !== "video") {
     throw new Error("YouTube only supports video uploads");
   }
 
   try {
-    const auth    = getAuth();
+    const auth = new google.auth.OAuth2(
+      process.env.YOUTUBE_CLIENT_ID, // app-level — stays in .env
+      process.env.YOUTUBE_CLIENT_SECRET,
+    );
+    auth.setCredentials({ refresh_token: account.refresh_token });
     const youtube = google.youtube({ version: "v3", auth });
 
     // Download from Cloudinary (may take time for large files)
@@ -57,10 +62,10 @@ export const postToYoutube = async ({
       part: ["snippet", "status"],
       requestBody: {
         snippet: {
-          title:       truncate(caption, 100),  // YT title max 100 chars
+          title: truncate(caption, 100), // YT title max 100 chars
           description: truncate(caption, 5_000),
-          tags:        keywords || [],
-          categoryId:  "22",  // People & Blogs — change as needed
+          tags: keywords || [],
+          categoryId: "22", // People & Blogs — change as needed
           defaultLanguage: "en",
         },
         status: {
@@ -71,7 +76,7 @@ export const postToYoutube = async ({
       },
       media: {
         mimeType: "video/mp4",
-        body:     stream,
+        body: stream,
       },
     });
 

@@ -7,8 +7,8 @@ import {
 
 const GRAPH = "https://graph.facebook.com/v18.0";
 
-const MAX_POLL_ATTEMPTS = 12;  // 12 × 5s = 60s max wait
-const POLL_INTERVAL_MS  = 5_000;
+const MAX_POLL_ATTEMPTS = 12; // 12 × 5s = 60s max wait
+const POLL_INTERVAL_MS = 5_000;
 
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
@@ -23,14 +23,14 @@ const waitForContainer = async (creationId, token) => {
     });
 
     console.log(
-      `📸 IG container [${attempt}/${MAX_POLL_ATTEMPTS}]: ${data.status_code}`
+      `📸 IG container [${attempt}/${MAX_POLL_ATTEMPTS}]: ${data.status_code}`,
     );
 
     if (data.status_code === "FINISHED") return;
 
     if (["ERROR", "EXPIRED"].includes(data.status_code)) {
       throw new Error(
-        `IG container ${data.status_code}: ${data.status || "unknown reason"}`
+        `IG container ${data.status_code}: ${data.status || "unknown reason"}`,
       );
     }
 
@@ -50,10 +50,15 @@ const waitForContainer = async (creationId, token) => {
  *   - Linked to a Facebook Page
  *   - FB_ACCESS_TOKEN must have instagram_basic + instagram_content_publish scopes
  */
-export const postToInstagram = async ({ fileUrl, caption, keywords, fileType }) => {
-  const igUserId = process.env.IG_BUSINESS_ACCOUNT_ID;
-  const token   = process.env.FB_ACCESS_TOKEN; // IG uses the FB Page token
-
+export const postToInstagram = async ({
+  fileUrl,
+  caption,
+  keywords,
+  fileType,
+  account,
+}) => {
+  const igUserId = account.account_id;
+  const token = account.access_token;
   if (fileType === "audio") {
     throw new Error("Instagram does not support audio posts");
   }
@@ -71,13 +76,13 @@ export const postToInstagram = async ({ fileUrl, caption, keywords, fileType }) 
     if (fileType === "image") {
       containerBody.image_url = fileUrl;
     } else if (fileType === "video") {
-      containerBody.video_url  = fileUrl;
+      containerBody.video_url = fileUrl;
       containerBody.media_type = "REELS"; // feed video must be Reels via Graph API
     }
 
     const { data: container } = await axios.post(
       `${GRAPH}/${igUserId}/media`,
-      containerBody
+      containerBody,
     );
     const creationId = container.id;
     console.log(`📸 IG container created: ${creationId}`);
@@ -88,7 +93,7 @@ export const postToInstagram = async ({ fileUrl, caption, keywords, fileType }) 
     // ── Step 3: Publish ───────────────────────────────────────────
     const { data: published } = await axios.post(
       `${GRAPH}/${igUserId}/media_publish`,
-      { creation_id: creationId, access_token: token }
+      { creation_id: creationId, access_token: token },
     );
 
     return { platform_post_id: published.id };

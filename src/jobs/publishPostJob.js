@@ -1,10 +1,10 @@
 import { Worker } from "bullmq";
 import { connection } from "../config/queue.js";
 import { Post, PostPlatform } from "../models/index.js";
-import { postToFacebook  } from "../services/platforms/facebook.js";
+import { postToFacebook } from "../services/platforms/facebook.js";
 import { postToInstagram } from "../services/platforms/instagram.js";
-import { postToYoutube   } from "../services/platforms/youtube.js";
-import { postToTwitter   } from "../services/platforms/twitter.js";
+import { postToYoutube } from "../services/platforms/youtube.js";
+import { postToTwitter } from "../services/platforms/twitter.js";
 
 const platformAdapters = {
   fb: postToFacebook,
@@ -21,7 +21,12 @@ export const createPublishWorker = () => {
       console.log(`\n🚀 publishPost fired — postId: ${postId}`);
 
       const post = await Post.findByPk(postId, {
-        include: [PostPlatform],
+        include: [
+          {
+            model: PostPlatform,
+            include: [{ model: SocialAccount }], // ← load credentials per row
+          },
+        ],
       });
 
       if (!post) {
@@ -35,43 +40,35 @@ export const createPublishWorker = () => {
       }
 
       const payload = {
-        fileUrl:  post.cloudinary_url,
-        caption:  post.caption,
+        fileUrl: post.cloudinary_url,
+        caption: post.caption,
         keywords: post.keywords || [],
         fileType: post.file_type,
       };
 
-      const results = await Promise.allSettled(
-        post.PostPlatforms.map(async (pp) => {
-          const adapter = platformAdapters[pp.platform];
+      post.PostPlatforms.map(async (pp) => {
+        const adapter = platformAdapters[pp.platform];
+        const account = pp.SocialAccount; // ← has access_token, account_id, etc.
 
-          if (!adapter) {
-            const msg = `No adapter registered for platform: ${pp.platform}`;
-            await pp.update({ publish_status: "failed", error_message: msg });
-            throw new Error(msg);
-          }
-
-          try {
-            const result = await adapter(payload);
-            await pp.update({
-              publish_status:   "done",
-              platform_post_id: result.platform_post_id,
-              error_message:    null,
-            });
-            console.log(`  ✅ ${pp.platform.toUpperCase()} → ${result.platform_post_id}`);
-          } catch (err) {
-            await pp.update({
-              publish_status: "failed",
-              error_message:  err.message,
-            });
-            console.error(`  ❌ ${pp.platform.toUpperCase()} → ${err.message}`);
-            throw err;
-          }
-        })
-      );
+        try {
+          const result = await adapter({ ...payload, account });
+          await pp.update({
+            publish_status: "done",
+            platform_post_id: result.platform_post_id,
+          });
+          console.log(`✅ ${account.label} → ${result.platform_post_id}`);
+        } catch (err) {
+          await pp.update({
+            publish_status: "failed",
+            error_message: err.message,
+          });
+          console.error(`❌ ${account.label} → ${err.message}`);
+          throw err;
+        }
+      });
 
       const succeeded = results.filter((r) => r.status === "fulfilled").length;
-      const failed    = results.filter((r) => r.status === "rejected").length;
+      const failed = results.filter((r) => r.status === "rejected").length;
 
       // Partial success — post is considered published even if some platforms failed.
       // Per-platform rows already carry individual statuses.
@@ -80,7 +77,7 @@ export const createPublishWorker = () => {
 
       console.log(
         `📌 Post ${postId} done — ` +
-        `${succeeded}/${results.length} platforms succeeded → status: ${finalStatus}\n`
+          `${succeeded}/${results.length} platforms succeeded → status: ${finalStatus}\n`,
       );
 
       // FIX (Bug 2): When EVERY platform call failed, the worker was previously
@@ -94,7 +91,10 @@ export const createPublishWorker = () => {
       // won't be retried and the post stays "published".
       if (succeeded === 0) {
         const reasons = results
-          .map((r, i) => `${post.PostPlatforms[i]?.platform}: ${r.reason?.message}`)
+          .map(
+            (r, i) =>
+              `${post.PostPlatforms[i]?.platform}: ${r.reason?.message}`,
+          )
           .join("; ");
         throw new Error(`All platforms failed — ${reasons}`);
       }
@@ -102,14 +102,12 @@ export const createPublishWorker = () => {
     {
       connection,
       concurrency: 10,
-    }
+    },
   );
 
-  worker.on("completed", (job) =>
-    console.log(`✅ Job ${job.id} completed`)
-  );
+  worker.on("completed", (job) => console.log(`✅ Job ${job.id} completed`));
   worker.on("failed", (job, err) =>
-    console.error(`❌ Job ${job?.id} failed: ${err.message}`)
+    console.error(`❌ Job ${job?.id} failed: ${err.message}`),
   );
 
   console.log("✅ BullMQ publish worker started");

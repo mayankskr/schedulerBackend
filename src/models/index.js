@@ -4,6 +4,13 @@ import Team from "./teamModel.js";
 import Post from "./postModel.js";
 import ScheduleSlot from "./scheduleSlotModel.js";
 import PostPlatform from "./postPlatform.js";
+import SocialAccount from './socialAccountModel.js';
+
+Team.hasMany(SocialAccount, { foreignKey: 'team_id' });
+SocialAccount.belongsTo(Team, { foreignKey: 'team_id' });
+
+PostPlatform.belongsTo(SocialAccount, { foreignKey: 'social_account_id' });
+SocialAccount.hasMany(PostPlatform, { foreignKey: 'social_account_id' });
 
 // Team <-> User
 Team.hasMany(User, { foreignKey: "team_id" });

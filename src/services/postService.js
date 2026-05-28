@@ -1,7 +1,10 @@
 import { Op } from "sequelize";
 import { Job } from "bullmq";
 import { Post, PostPlatform, User } from "../models/index.js";
-import { uploadOnCloudinary, deleteFromCloudinary } from "../utils/cloudinary.js";
+import {
+  uploadOnCloudinary,
+  deleteFromCloudinary,
+} from "../utils/cloudinary.js";
 import { nextAvailableSlot, bookSlot, freeSlot } from "./schedulerService.js";
 import postQueue from "../config/queue.js";
 import { AppError } from "../utils/appError.js";
@@ -10,25 +13,33 @@ import { AppError } from "../utils/appError.js";
 // Constants
 // ─────────────────────────────────────────────────────────────────
 
-const VALID_PLATFORMS    = ["fb", "ig", "yt", "tw"];
+const VALID_PLATFORMS = ["fb", "ig", "yt", "tw"];
 const IMMUTABLE_STATUSES = ["published", "cancelled"];
 
 // ─────────────────────────────────────────────────────────────────
 // Private helpers
 // ─────────────────────────────────────────────────────────────────
 
-const parsePlatforms = (platforms) => {
-  if (Array.isArray(platforms)) return platforms;
-  if (typeof platforms === "string") {
-    try { return JSON.parse(platforms); } catch { return [platforms]; }
+const parseAccountIds = (accounts) => {
+  if (Array.isArray(accounts)) return accounts;
+  if (typeof accounts === "string") {
+    try {
+      return JSON.parse(accounts);
+    } catch {
+      return [accounts];
+    }
   }
-  return [...VALID_PLATFORMS];
+  return [];
 };
 
 const parseKeywords = (keywords) => {
   if (!keywords) return [];
   if (Array.isArray(keywords)) return keywords;
-  try { return JSON.parse(keywords); } catch { return [keywords]; }
+  try {
+    return JSON.parse(keywords);
+  } catch {
+    return [keywords];
+  }
 };
 
 const cloudinaryResourceType = (fileType) =>
@@ -42,7 +53,7 @@ const resolveFileType = (mimetype) => {
 const resetPlatformStatuses = (postId) =>
   PostPlatform.update(
     { publish_status: "pending", platform_post_id: null, error_message: null },
-    { where: { post_id: postId } }
+    { where: { post_id: postId } },
   );
 
 /**
@@ -64,13 +75,13 @@ const cancelJob = async (postId) => {
  */
 const scheduleJob = async (postId, slotTime) => {
   const delay = Math.max(0, new Date(slotTime) - Date.now());
-  const job   = await postQueue.add(
+  const job = await postQueue.add(
     "publishPost",
     { postId },
     {
-      jobId: postId,   // deterministic ID — makes cancellation easy
+      jobId: postId, // deterministic ID — makes cancellation easy
       delay,
-    }
+    },
   );
   return job.id;
 };
@@ -83,28 +94,33 @@ export const createPostService = async ({
   file,
   caption,
   keywords,
-  platforms,
+  accounts,
   scheduled_at,
   userId,
 }) => {
-  const parsedKeywords    = parseKeywords(keywords);
-  const selectedPlatforms = parsePlatforms(platforms);
-  const fileType          = resolveFileType(file.mimetype);
+  const accountIds = parseAccountIds(accounts);
+  if (!accountIds.length)
+    throw new AppError("Select at least one account", 400);
 
-  const invalidPlatforms = selectedPlatforms.filter((p) => !VALID_PLATFORMS.includes(p));
-  if (invalidPlatforms.length)
-    throw new AppError(`Invalid platform(s): ${invalidPlatforms.join(", ")}`, 400);
+  const user = await User.findByPk(userId);
+
+  // Validate all selected accounts belong to this team
+  const selectedAccounts = await SocialAccount.findAll({
+    where: { id: accountIds, team_id: user.team_id, is_active: true },
+  });
+  if (selectedAccounts.length !== accountIds.length)
+    throw new AppError("One or more account IDs are invalid", 400);
 
   // ── Step 1: Cloudinary upload ─────────────────────────────────
   const cloudinaryResponse = await uploadOnCloudinary(file.buffer, {
-    folder:        "postscheduler",
-    tags:          parsedKeywords,
+    folder: "postscheduler",
+    tags: parsedKeywords,
     resource_type: "auto",
   });
-  if (!cloudinaryResponse)
-    throw new AppError("Cloudinary upload failed", 500);
+  if (!cloudinaryResponse) throw new AppError("Cloudinary upload failed", 500);
 
-  const { secure_url: cloudinaryUrl, public_id: cloudinaryPublicId } = cloudinaryResponse;
+  const { secure_url: cloudinaryUrl, public_id: cloudinaryPublicId } =
+    cloudinaryResponse;
 
   // FIX (Bug 1): Track the created Post so it can be destroyed in the catch block
   // if any subsequent step (slot booking, platform rows, job scheduling) fails.
@@ -120,52 +136,61 @@ export const createPostService = async ({
 
     // ── Step 3: Persist Post record ───────────────────────────────
     post = await Post.create({
-      user_id:              userId,
-      cloudinary_url:       cloudinaryUrl,
+      user_id: userId,
+      cloudinary_url: cloudinaryUrl,
       cloudinary_public_id: cloudinaryPublicId,
-      file_type:            fileType,
+      file_type: fileType,
       caption,
-      keywords:     parsedKeywords,
+      keywords: parsedKeywords,
       scheduled_at: requestedTime,
-      status:       "scheduled",
+      status: "scheduled",
     });
 
     // ── Step 4: Book slot (collision-safe) ────────────────────────
-    const bookedSlot     = await bookSlot(post.id, requestedTime);
+    const bookedSlot = await bookSlot(post.id, requestedTime);
     const actualSlotTime = bookedSlot.slot_time;
 
     // ── Step 5: PostPlatform rows ─────────────────────────────────
     await PostPlatform.bulkCreate(
-      selectedPlatforms.map((platform) => ({
-        post_id:        post.id,
-        platform,
+      selectedAccounts.map((acct) => ({
+        post_id: post.id,
+        social_account_id: acct.id,
+        platform: acct.platform, // still useful for filtering
         publish_status: "pending",
-      }))
+      })),
     );
 
     // ── Step 6: Schedule BullMQ job ───────────────────────────────
     const jobId = await scheduleJob(post.id, actualSlotTime);
 
     await post.update({
-      scheduled_at:  actualSlotTime,
+      scheduled_at: actualSlotTime,
       agenda_job_id: jobId,
     });
 
     return post.reload({ include: [PostPlatform] });
-
   } catch (err) {
     // FIX (Bug 1): Clean up both Cloudinary asset AND the Post row so nothing
     // is left orphaned. Errors in rollback are logged but not re-thrown so the
     // original error always propagates to the caller.
-    await deleteFromCloudinary(cloudinaryPublicId, cloudinaryResourceType(fileType))
-      .catch((e) =>
-        console.error(`⚠️  Cloudinary rollback failed for ${cloudinaryPublicId}:`, e.message)
-      );
+    await deleteFromCloudinary(
+      cloudinaryPublicId,
+      cloudinaryResourceType(fileType),
+    ).catch((e) =>
+      console.error(
+        `⚠️  Cloudinary rollback failed for ${cloudinaryPublicId}:`,
+        e.message,
+      ),
+    );
 
     if (post?.id) {
-      await post.destroy()
+      await post
+        .destroy()
         .catch((e) =>
-          console.error(`⚠️  Post record rollback failed for ${post.id}:`, e.message)
+          console.error(
+            `⚠️  Post record rollback failed for ${post.id}:`,
+            e.message,
+          ),
         );
     }
 
@@ -179,7 +204,7 @@ export const createPostService = async ({
 
 export const getPostsService = async (
   userId,
-  { page = 1, limit = 10, status, platform } = {}
+  { page = 1, limit = 10, status, platform } = {},
 ) => {
   const currentUser = await User.findByPk(userId);
   if (!currentUser) throw new AppError("User not found", 404);
@@ -187,7 +212,7 @@ export const getPostsService = async (
   let teamUserIds = [userId];
   if (currentUser.team_id) {
     const teamMembers = await User.findAll({
-      where:      { team_id: currentUser.team_id },
+      where: { team_id: currentUser.team_id },
       attributes: ["id"],
     });
     teamUserIds = teamMembers.map((u) => u.id);
@@ -202,12 +227,12 @@ export const getPostsService = async (
   }
 
   const platformInclude = {
-    model:    PostPlatform,
+    model: PostPlatform,
     required: !!platform,
   };
   if (platform) platformInclude.where = { platform };
 
-  const parsedPage  = Math.max(1, parseInt(page)  || 1);
+  const parsedPage = Math.max(1, parseInt(page) || 1);
   const parsedLimit = Math.min(100, parseInt(limit) || 10);
 
   const { count, rows } = await Post.findAndCountAll({
@@ -216,20 +241,20 @@ export const getPostsService = async (
       platformInclude,
       { model: User, attributes: ["id", "name", "email"] },
     ],
-    order:    [["scheduled_at", "DESC"]],
-    limit:    parsedLimit,
-    offset:   (parsedPage - 1) * parsedLimit,
+    order: [["scheduled_at", "DESC"]],
+    limit: parsedLimit,
+    offset: (parsedPage - 1) * parsedLimit,
     distinct: true,
   });
 
   return {
-    posts:      rows,
-    total:      count,
-    page:       parsedPage,
-    limit:      parsedLimit,
+    posts: rows,
+    total: count,
+    page: parsedPage,
+    limit: parsedLimit,
     totalPages: Math.ceil(count / parsedLimit),
-    hasNext:    parsedPage < Math.ceil(count / parsedLimit),
-    hasPrev:    parsedPage > 1,
+    hasNext: parsedPage < Math.ceil(count / parsedLimit),
+    hasPrev: parsedPage > 1,
   };
 };
 
@@ -267,11 +292,11 @@ export const updatePostService = async ({
   if (IMMUTABLE_STATUSES.includes(post.status)) {
     throw new AppError(
       `Cannot edit a ${post.status} post. Only scheduled, draft, or failed posts can be modified.`,
-      400
+      400,
     );
   }
 
-  const updates  = {};
+  const updates = {};
   const isFailed = post.status === "failed";
   const willReschedule = scheduled_at !== undefined || isFailed;
 
@@ -283,11 +308,14 @@ export const updatePostService = async ({
   if (file) {
     const cloudinaryResponse = await uploadOnCloudinary(file.buffer, {
       folder: "postscheduler",
-      tags:   keywords ? parseKeywords(keywords) : post.keywords,
+      tags: keywords ? parseKeywords(keywords) : post.keywords,
       resource_type: "auto",
     });
     if (!cloudinaryResponse)
-      throw new AppError("Cloudinary upload failed during file replacement", 500);
+      throw new AppError(
+        "Cloudinary upload failed during file replacement",
+        500,
+      );
 
     // New upload confirmed — now safe to remove the old asset.
     // Failure here is non-fatal: the new asset is already stored and the
@@ -295,37 +323,42 @@ export const updatePostService = async ({
     if (post.cloudinary_public_id) {
       await deleteFromCloudinary(
         post.cloudinary_public_id,
-        cloudinaryResourceType(post.file_type)
+        cloudinaryResourceType(post.file_type),
       ).catch((e) =>
         console.error(
           `⚠️  Failed to delete old Cloudinary asset ${post.cloudinary_public_id}:`,
-          e.message
-        )
+          e.message,
+        ),
       );
     }
 
-    updates.cloudinary_url       = cloudinaryResponse.secure_url;
+    updates.cloudinary_url = cloudinaryResponse.secure_url;
     updates.cloudinary_public_id = cloudinaryResponse.public_id;
-    updates.file_type            = resolveFileType(file.mimetype);
+    updates.file_type = resolveFileType(file.mimetype);
   }
 
-  if (caption  !== undefined) updates.caption  = caption;
+  if (caption !== undefined) updates.caption = caption;
   if (keywords !== undefined) updates.keywords = parseKeywords(keywords);
 
   // ── Platform selection ────────────────────────────────────────
   if (platforms !== undefined) {
     const selectedPlatforms = parsePlatforms(platforms);
-    const invalidPlatforms  = selectedPlatforms.filter((p) => !VALID_PLATFORMS.includes(p));
+    const invalidPlatforms = selectedPlatforms.filter(
+      (p) => !VALID_PLATFORMS.includes(p),
+    );
     if (invalidPlatforms.length)
-      throw new AppError(`Invalid platform(s): ${invalidPlatforms.join(", ")}`, 400);
+      throw new AppError(
+        `Invalid platform(s): ${invalidPlatforms.join(", ")}`,
+        400,
+      );
 
     await PostPlatform.destroy({ where: { post_id: postId } });
     await PostPlatform.bulkCreate(
       selectedPlatforms.map((platform) => ({
-        post_id:        postId,
+        post_id: postId,
         platform,
         publish_status: "pending",
-      }))
+      })),
     );
   }
 
@@ -334,15 +367,17 @@ export const updatePostService = async ({
     await cancelJob(postId);
     await freeSlot(postId);
 
-    const targetTime     = scheduled_at ? new Date(scheduled_at) : await nextAvailableSlot(new Date());
-    const bookedSlot     = await bookSlot(postId, targetTime);
+    const targetTime = scheduled_at
+      ? new Date(scheduled_at)
+      : await nextAvailableSlot(new Date());
+    const bookedSlot = await bookSlot(postId, targetTime);
     const actualSlotTime = bookedSlot.slot_time;
 
     const jobId = await scheduleJob(postId, actualSlotTime);
 
-    updates.scheduled_at  = actualSlotTime;
+    updates.scheduled_at = actualSlotTime;
     updates.agenda_job_id = jobId;
-    updates.status        = "scheduled";
+    updates.status = "scheduled";
 
     if (platforms === undefined) {
       await resetPlatformStatuses(postId);
@@ -379,14 +414,14 @@ export const deletePostService = async (postId, userId) => {
   if (post.cloudinary_public_id) {
     await deleteFromCloudinary(
       post.cloudinary_public_id,
-      cloudinaryResourceType(post.file_type)
+      cloudinaryResourceType(post.file_type),
     );
   }
 
   // ── Step 4: Soft-delete ───────────────────────────────────────
   await post.update({
-    status:               "cancelled",
-    cloudinary_url:       null,
+    status: "cancelled",
+    cloudinary_url: null,
     cloudinary_public_id: null,
   });
 
