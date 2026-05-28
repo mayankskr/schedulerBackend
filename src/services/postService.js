@@ -3,7 +3,7 @@ import { Job } from "bullmq";
 import { Post, PostPlatform, User } from "../models/index.js";
 import { uploadOnCloudinary, deleteFromCloudinary } from "../utils/cloudinary.js";
 import { nextAvailableSlot, bookSlot, freeSlot } from "./schedulerService.js";
-import postQueue, { connection } from "../config/queue.js";
+import postQueue from "../config/queue.js";
 import { AppError } from "../utils/appError.js";
 
 // ─────────────────────────────────────────────────────────────────
@@ -31,8 +31,8 @@ const parseKeywords = (keywords) => {
   try { return JSON.parse(keywords); } catch { return [keywords]; }
 };
 
-const cloudinaryResourceType = (mimePrefix) =>
-  mimePrefix === "image" ? "image" : "video";
+const cloudinaryResourceType = (fileType) =>
+  fileType === "image" ? "image" : "video";
 
 const resolveFileType = (mimetype) => {
   const prefix = mimetype.split("/")[0];
@@ -106,6 +106,12 @@ export const createPostService = async ({
 
   const { secure_url: cloudinaryUrl, public_id: cloudinaryPublicId } = cloudinaryResponse;
 
+  // FIX (Bug 1): Track the created Post so it can be destroyed in the catch block
+  // if any subsequent step (slot booking, platform rows, job scheduling) fails.
+  // Without this, a Post row is left orphaned in the DB with status "scheduled"
+  // but no slot and no BullMQ job — it will never publish and can never be cleaned up.
+  let post;
+
   try {
     // ── Step 2: Resolve slot time ─────────────────────────────────
     const requestedTime = scheduled_at
@@ -113,7 +119,7 @@ export const createPostService = async ({
       : await nextAvailableSlot(new Date());
 
     // ── Step 3: Persist Post record ───────────────────────────────
-    const post = await Post.create({
+    post = await Post.create({
       user_id:              userId,
       cloudinary_url:       cloudinaryUrl,
       cloudinary_public_id: cloudinaryPublicId,
@@ -142,16 +148,27 @@ export const createPostService = async ({
 
     await post.update({
       scheduled_at:  actualSlotTime,
-      agenda_job_id: jobId,   // field reused for BullMQ job id
+      agenda_job_id: jobId,
     });
 
     return post.reload({ include: [PostPlatform] });
 
   } catch (err) {
+    // FIX (Bug 1): Clean up both Cloudinary asset AND the Post row so nothing
+    // is left orphaned. Errors in rollback are logged but not re-thrown so the
+    // original error always propagates to the caller.
     await deleteFromCloudinary(cloudinaryPublicId, cloudinaryResourceType(fileType))
       .catch((e) =>
         console.error(`⚠️  Cloudinary rollback failed for ${cloudinaryPublicId}:`, e.message)
       );
+
+    if (post?.id) {
+      await post.destroy()
+        .catch((e) =>
+          console.error(`⚠️  Post record rollback failed for ${post.id}:`, e.message)
+        );
+    }
+
     throw err;
   }
 };
@@ -259,19 +276,33 @@ export const updatePostService = async ({
   const willReschedule = scheduled_at !== undefined || isFailed;
 
   // ── File replacement ──────────────────────────────────────────
+  // FIX (Bug 4): Upload the NEW file first. Only destroy the old Cloudinary
+  // asset after the upload succeeds. Previously the old asset was deleted
+  // before uploading — if the upload then threw, the post was left with a
+  // DB record pointing to a now-deleted Cloudinary URL.
   if (file) {
+    const cloudinaryResponse = await uploadOnCloudinary(file.buffer, {
+      folder: "postscheduler",
+      tags:   keywords ? parseKeywords(keywords) : post.keywords,
+      resource_type: "auto",
+    });
+    if (!cloudinaryResponse)
+      throw new AppError("Cloudinary upload failed during file replacement", 500);
+
+    // New upload confirmed — now safe to remove the old asset.
+    // Failure here is non-fatal: the new asset is already stored and the
+    // post record will be updated to point to it. Log and move on.
     if (post.cloudinary_public_id) {
       await deleteFromCloudinary(
         post.cloudinary_public_id,
         cloudinaryResourceType(post.file_type)
+      ).catch((e) =>
+        console.error(
+          `⚠️  Failed to delete old Cloudinary asset ${post.cloudinary_public_id}:`,
+          e.message
+        )
       );
     }
-    const cloudinaryResponse = await uploadOnCloudinary(file.buffer, {
-      folder: "postscheduler",
-      tags:   keywords ? parseKeywords(keywords) : post.keywords,
-    });
-    if (!cloudinaryResponse)
-      throw new AppError("Cloudinary upload failed during file replacement", 500);
 
     updates.cloudinary_url       = cloudinaryResponse.secure_url;
     updates.cloudinary_public_id = cloudinaryResponse.public_id;

@@ -73,14 +73,31 @@ export const createPublishWorker = () => {
       const succeeded = results.filter((r) => r.status === "fulfilled").length;
       const failed    = results.filter((r) => r.status === "rejected").length;
 
-      const finalStatus = succeeded === 0 ? "failed" : "published";
-
+      // Partial success — post is considered published even if some platforms failed.
+      // Per-platform rows already carry individual statuses.
+      const finalStatus = succeeded > 0 ? "published" : "failed";
       await post.update({ status: finalStatus });
 
       console.log(
         `📌 Post ${postId} done — ` +
         `${succeeded}/${results.length} platforms succeeded → status: ${finalStatus}\n`
       );
+
+      // FIX (Bug 2): When EVERY platform call failed, the worker was previously
+      // returning normally, causing BullMQ to mark the job as "completed".
+      // That made the queue's `attempts: 3` / exponential backoff config
+      // completely inert — retries never fired.
+      //
+      // Now we throw so BullMQ marks the job "failed" and schedules a retry
+      // (up to the configured attempts limit with exponential backoff).
+      // Partial success (≥1 platform OK) still resolves cleanly — the job
+      // won't be retried and the post stays "published".
+      if (succeeded === 0) {
+        const reasons = results
+          .map((r, i) => `${post.PostPlatforms[i]?.platform}: ${r.reason?.message}`)
+          .join("; ");
+        throw new Error(`All platforms failed — ${reasons}`);
+      }
     },
     {
       connection,
