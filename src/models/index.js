@@ -3,8 +3,8 @@ import User from "./userModel.js";
 import Team from "./teamModel.js";
 import Post from "./postModel.js";
 import ScheduleSlot from "./scheduleSlotModel.js";
-import PostPlatform from "./postPlatform.js";
 import SocialAccount from './socialAccountModel.js';
+import PostPlatform from "./postPlatform.js";
 
 Team.hasMany(SocialAccount, { foreignKey: 'team_id' });
 SocialAccount.belongsTo(Team, { foreignKey: 'team_id' });
@@ -28,4 +28,5 @@ PostPlatform.belongsTo(Post, { foreignKey: "post_id" });
 Post.hasOne(ScheduleSlot, { foreignKey: "post_id" });
 ScheduleSlot.belongsTo(Post, { foreignKey: "post_id" });
 
-export { sequelize, User, Team, Post, ScheduleSlot, PostPlatform };
+export { sequelize, User, Team, Post, ScheduleSlot, PostPlatform, SocialAccount };
+//                                                               ↑ add this

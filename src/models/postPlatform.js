@@ -29,7 +29,7 @@ const PostPlatform = sequelize.define(
     },
     social_account_id: {
       type: DataTypes.UUID,
-      allowNull: false,
+      allowNull: true,
       references: { model: "social_accounts", key: "id" },
     },
     error_message: {
