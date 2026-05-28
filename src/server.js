@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 4000;
 //     existing ones.  Run Sequelize migrations (sequelize db:migrate) for
 //     any schema changes in non-dev environments.
 const syncOptions = process.env.NODE_ENV === "development"
-  ? { alter: true }
+  ? { alter: false }
   : {};
 
 sequelize
