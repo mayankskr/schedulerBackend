@@ -15,13 +15,14 @@ import { AppError, asyncWrap } from "../utils/appError.js";
 export const createPost = asyncWrap(async (req, res) => {
   if (!req.file) throw new AppError("File is required", 400);
 
-  const { caption, keywords, scheduled_at, platforms } = req.body;
+  // BUG 1 FIX: was `platforms` — service expects `accounts` (social account UUIDs)
+  const { caption, keywords, scheduled_at, accounts } = req.body;
 
   const post = await createPostService({
     file: req.file,
     caption,
     keywords,
-    platforms,
+    accounts,       // ← array of SocialAccount UUIDs (JSON string from FormData)
     scheduled_at,
     userId: req.user.id,
   });
@@ -56,14 +57,15 @@ export const getPost = asyncWrap(async (req, res) => {
 // ─────────────────────────────────────────────────────────────────
 
 export const updatePost = asyncWrap(async (req, res) => {
-  const { caption, keywords, platforms, scheduled_at } = req.body;
+  // BUG 1 FIX: was `platforms` — service expects `accounts`
+  const { caption, keywords, accounts, scheduled_at } = req.body;
 
   const post = await updatePostService({
     postId:       req.params.id,
-    file:         req.file, // undefined when no new file is attached
+    file:         req.file,   // undefined when no new file attached
     caption,
     keywords,
-    platforms,
+    accounts,     // ← array of SocialAccount UUIDs (JSON string from FormData)
     scheduled_at,
     userId:       req.user.id,
   });

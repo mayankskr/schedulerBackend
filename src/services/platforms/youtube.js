@@ -7,23 +7,6 @@ import {
 } from "../../utils/platformHelpers.js";
 
 /**
- * Builds an OAuth2 client pre-loaded with the stored refresh token.
- * googleapis handles token rotation automatically.
- */
-const getAuth = () => {
-  const client = new google.auth.OAuth2(
-    process.env.YOUTUBE_CLIENT_ID,
-    process.env.YOUTUBE_CLIENT_SECRET,
-    process.env.YOUTUBE_REDIRECT_URI ||
-      "https://developers.google.com/oauthplayground",
-  );
-  client.setCredentials({
-    refresh_token: process.env.YOUTUBE_REFRESH_TOKEN,
-  });
-  return client;
-};
-
-/**
  * YouTube Data API v3 — videos.insert()
  *
  * YouTube does NOT accept a URL — it requires the raw file bytes.
@@ -31,8 +14,6 @@ const getAuth = () => {
  *
  * Only supports video. Quota cost: ~1600 units per upload.
  * Daily quota: 10,000 units (free tier).
- *
- * Privacy defaults to "public". Pass privacyStatus in options to override.
  */
 export const postToYoutube = async ({
   fileUrl,
@@ -40,6 +21,9 @@ export const postToYoutube = async ({
   keywords,
   fileType,
   account,
+  // BUG 5 FIX: `privacyStatus` was referenced in requestBody but never defined.
+  // Default to "public"; callers can override if needed.
+  privacyStatus = "public",
 }) => {
   if (fileType !== "video") {
     throw new Error("YouTube only supports video uploads");
@@ -47,14 +31,14 @@ export const postToYoutube = async ({
 
   try {
     const auth = new google.auth.OAuth2(
-      process.env.YOUTUBE_CLIENT_ID, // app-level — stays in .env
+      process.env.YOUTUBE_CLIENT_ID,
       process.env.YOUTUBE_CLIENT_SECRET,
     );
+    // Use per-account refresh token stored in social_accounts table
     auth.setCredentials({ refresh_token: account.refresh_token });
     const youtube = google.youtube({ version: "v3", auth });
 
-    // Download from Cloudinary (may take time for large files)
-    console.log("▶️  Downloading video from Cloudinary for YouTube...");
+    console.log("▶️  Downloading video from Cloudinary for YouTube…");
     const buffer = await downloadAsBuffer(fileUrl);
     const stream = bufferToStream(buffer);
 
@@ -62,21 +46,21 @@ export const postToYoutube = async ({
       part: ["snippet", "status"],
       requestBody: {
         snippet: {
-          title: truncate(caption, 100), // YT title max 100 chars
-          description: truncate(caption, 5_000),
-          tags: keywords || [],
-          categoryId: "22", // People & Blogs — change as needed
+          title:           truncate(caption, 100),   // YT title max 100 chars
+          description:     truncate(caption, 5_000),
+          tags:            keywords || [],
+          categoryId:      "22",                     // People & Blogs
           defaultLanguage: "en",
         },
         status: {
-          privacyStatus,
+          privacyStatus,                             // BUG 5 FIX: now a real value
           selfDeclaredMadeForKids: false,
-          embeddable: true,
+          embeddable:              true,
         },
       },
       media: {
         mimeType: "video/mp4",
-        body: stream,
+        body:     stream,
       },
     });
 

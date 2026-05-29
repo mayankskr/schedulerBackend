@@ -1,10 +1,11 @@
 import { Worker } from "bullmq";
 import { connection } from "../config/queue.js";
-import { Post, PostPlatform } from "../models/index.js";
-import { postToFacebook } from "../services/platforms/facebook.js";
+// BUG 4a FIX: SocialAccount was used in the include but never imported
+import { Post, PostPlatform, SocialAccount } from "../models/index.js";
+import { postToFacebook }  from "../services/platforms/facebook.js";
 import { postToInstagram } from "../services/platforms/instagram.js";
-import { postToYoutube } from "../services/platforms/youtube.js";
-import { postToTwitter } from "../services/platforms/twitter.js";
+import { postToYoutube }   from "../services/platforms/youtube.js";
+import { postToTwitter }   from "../services/platforms/twitter.js";
 
 const platformAdapters = {
   fb: postToFacebook,
@@ -23,8 +24,14 @@ export const createPublishWorker = () => {
       const post = await Post.findByPk(postId, {
         include: [
           {
-            model: PostPlatform,
-            include: [{ model: SocialAccount }], // ← load credentials per row
+            model:   PostPlatform,
+            include: [
+              {
+                // BUG 4a FIX: SocialAccount now imported so this include works
+                model:      SocialAccount,
+                attributes: ["id", "label", "platform", "access_token", "refresh_token", "account_id"],
+              },
+            ],
           },
         ],
       });
@@ -40,61 +47,63 @@ export const createPublishWorker = () => {
       }
 
       const payload = {
-        fileUrl: post.cloudinary_url,
-        caption: post.caption,
+        fileUrl:  post.cloudinary_url,
+        caption:  post.caption,
         keywords: post.keywords || [],
         fileType: post.file_type,
       };
 
-      post.PostPlatforms.map(async (pp) => {
-        const adapter = platformAdapters[pp.platform];
-        const account = pp.SocialAccount; // ← has access_token, account_id, etc.
+      // BUG 4b FIX: original code did `post.PostPlatforms.map(async ...)` but
+      // never captured the return value — `results` was referenced later as
+      // undefined, causing a ReferenceError at runtime.
+      // Fix: wrap in Promise.allSettled so every platform attempt runs in
+      // parallel and all outcomes (fulfilled / rejected) are collected.
+      const results = await Promise.allSettled(
+        post.PostPlatforms.map(async (pp) => {
+          const adapter = platformAdapters[pp.platform];
+          if (!adapter) throw new Error(`No adapter for platform "${pp.platform}"`);
 
-        try {
-          const result = await adapter({ ...payload, account });
-          await pp.update({
-            publish_status: "done",
-            platform_post_id: result.platform_post_id,
-          });
-          console.log(`✅ ${account.label} → ${result.platform_post_id}`);
-        } catch (err) {
-          await pp.update({
-            publish_status: "failed",
-            error_message: err.message,
-          });
-          console.error(`❌ ${account.label} → ${err.message}`);
-          throw err;
-        }
-      });
+          const account = pp.SocialAccount;
+          if (!account) throw new Error(`No linked SocialAccount on PostPlatform ${pp.id}`);
+
+          try {
+            const result = await adapter({ ...payload, account });
+            await pp.update({
+              publish_status:   "done",
+              platform_post_id: result.platform_post_id,
+              error_message:    null,
+            });
+            console.log(`✅ ${account.label} → ${result.platform_post_id}`);
+            return result;
+          } catch (err) {
+            await pp.update({
+              publish_status: "failed",
+              error_message:  err.message,
+            });
+            console.error(`❌ ${account.label} → ${err.message}`);
+            throw err;   // re-throw so Promise.allSettled marks this as rejected
+          }
+        }),
+      );
 
       const succeeded = results.filter((r) => r.status === "fulfilled").length;
-      const failed = results.filter((r) => r.status === "rejected").length;
+      const failed    = results.filter((r) => r.status === "rejected").length;
 
-      // Partial success — post is considered published even if some platforms failed.
-      // Per-platform rows already carry individual statuses.
+      // Partial success: post is published even if some platforms failed.
+      // Per-platform rows carry individual statuses.
       const finalStatus = succeeded > 0 ? "published" : "failed";
       await post.update({ status: finalStatus });
 
       console.log(
-        `📌 Post ${postId} done — ` +
+        `📌 Post ${postId} — ` +
           `${succeeded}/${results.length} platforms succeeded → status: ${finalStatus}\n`,
       );
 
-      // FIX (Bug 2): When EVERY platform call failed, the worker was previously
-      // returning normally, causing BullMQ to mark the job as "completed".
-      // That made the queue's `attempts: 3` / exponential backoff config
-      // completely inert — retries never fired.
-      //
-      // Now we throw so BullMQ marks the job "failed" and schedules a retry
-      // (up to the configured attempts limit with exponential backoff).
-      // Partial success (≥1 platform OK) still resolves cleanly — the job
-      // won't be retried and the post stays "published".
+      // When EVERY platform failed throw so BullMQ marks the job "failed"
+      // and the configured retry / backoff policy kicks in.
       if (succeeded === 0) {
         const reasons = results
-          .map(
-            (r, i) =>
-              `${post.PostPlatforms[i]?.platform}: ${r.reason?.message}`,
-          )
+          .map((r, i) => `${post.PostPlatforms[i]?.platform}: ${r.reason?.message}`)
           .join("; ");
         throw new Error(`All platforms failed — ${reasons}`);
       }
@@ -105,7 +114,9 @@ export const createPublishWorker = () => {
     },
   );
 
-  worker.on("completed", (job) => console.log(`✅ Job ${job.id} completed`));
+  worker.on("completed", (job) =>
+    console.log(`✅ Job ${job.id} completed`),
+  );
   worker.on("failed", (job, err) =>
     console.error(`❌ Job ${job?.id} failed: ${err.message}`),
   );
